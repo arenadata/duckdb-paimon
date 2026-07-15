@@ -25,6 +25,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
+#include "duckdb/common/string_util.hpp"
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
@@ -79,6 +80,22 @@ struct PaimonInsertLocalState : public LocalSinkState {
 // Sink interface
 // ---------------------------------------------------------------------------
 
+//! table_path layout is <warehouse>/<db><DB_SUFFIX>/<table>
+static void SplitDataTablePath(const string &table_path, string &warehouse, string &db_name, string &table_name) {
+	auto table_slash = table_path.find_last_of('/');
+	auto db_start = table_slash == string::npos ? string::npos : table_path.find_last_of('/', table_slash - 1);
+	if (db_start == string::npos) {
+		throw IOException("Invalid Paimon table path: " + table_path);
+	}
+	table_name = table_path.substr(table_slash + 1);
+	db_name = table_path.substr(db_start + 1, table_slash - db_start - 1);
+	const string db_suffix(paimon::Catalog::DB_SUFFIX);
+	if (db_name.size() > db_suffix.size() && StringUtil::EndsWith(db_name, db_suffix)) {
+		db_name = db_name.substr(0, db_name.size() - db_suffix.size());
+	}
+	warehouse = table_path.substr(0, db_start);
+}
+
 unique_ptr<GlobalSinkState> PhysicalPaimonInsert::GetGlobalSinkState(ClientContext &context) const {
 	auto state = make_uniq<PaimonInsertGlobalState>();
 
@@ -89,17 +106,25 @@ unique_ptr<GlobalSinkState> PhysicalPaimonInsert::GetGlobalSinkState(ClientConte
 	}
 
 	if (!part_keys.empty()) {
-		auto &paimon_catalog = schema->catalog.Cast<PaimonCatalog>();
-		auto &catalog = paimon_catalog.GetPaimonCatalog();
-		auto schema_name = info ? info->Base().schema : schema->name;
-		auto table_name = info ? info->Base().table : string();
-
-		if (table_name.empty()) {
-			auto last_slash = table_path.rfind('/');
-			table_name = (last_slash != string::npos) ? table_path.substr(last_slash + 1) : table_path;
+		// Resolve the table schema straight from the warehouse instead of
+		// casting to PaimonCatalog: the operator must stay plannable from
+		// foreign catalogs (e.g. a Hive Metastore catalog inserting into a
+		// Paimon table).
+		string warehouse, db_name, table_name;
+		SplitDataTablePath(table_path, warehouse, db_name, table_name);
+		if (info) {
+			db_name = info->Base().schema;
+			table_name = info->Base().table;
 		}
 
-		auto schema_result = catalog.LoadTableSchema(paimon::Identifier(schema_name, table_name));
+		auto catalog_result =
+		    paimon::Catalog::Create(warehouse, paimon_options, DuckDBVfsFileSystem::TryWrap(context, warehouse));
+		if (!catalog_result.ok()) {
+			throw IOException(catalog_result.status().ToString());
+		}
+		auto catalog = std::move(catalog_result).value();
+
+		auto schema_result = catalog->LoadTableSchema(paimon::Identifier(db_name, table_name));
 		if (!schema_result.ok()) {
 			throw IOException(schema_result.status().ToString());
 		}
