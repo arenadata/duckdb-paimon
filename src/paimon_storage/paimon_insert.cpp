@@ -35,6 +35,7 @@
 #include "paimon/schema/schema.h"
 #include "paimon/write_context.h"
 
+#include "duckdb_vfs_file_system.hpp"
 #include "paimon_catalog.hpp"
 #include "paimon_insert.hpp"
 #include "paimon_schema_entry.hpp"
@@ -136,7 +137,11 @@ unique_ptr<LocalSinkState> PhysicalPaimonInsert::GetLocalSinkState(ExecutionCont
 	int32_t write_id = gstate.next_write_id.fetch_add(1);
 
 	paimon::WriteContextBuilder write_builder(table_path, "duckdb");
-	auto write_ctx_result = write_builder.WithWriteId(write_id).SetOptions(paimon_options).Finish();
+	write_builder.WithWriteId(write_id).SetOptions(paimon_options);
+	if (auto vfs = DuckDBVfsFileSystem::TryWrap(context.client, table_path)) {
+		write_builder.WithFileSystem(vfs);
+	}
+	auto write_ctx_result = write_builder.Finish();
 	if (!write_ctx_result.ok()) {
 		throw IOException(write_ctx_result.status().ToString());
 	}
@@ -275,7 +280,11 @@ SinkFinalizeType PhysicalPaimonInsert::Finalize(Pipeline &pipeline, Event &event
 	}
 
 	paimon::CommitContextBuilder commit_builder(table_path, "duckdb");
-	auto commit_ctx_result = commit_builder.SetOptions(paimon_options).Finish();
+	commit_builder.SetOptions(paimon_options);
+	if (auto vfs = DuckDBVfsFileSystem::TryWrap(context, table_path)) {
+		commit_builder.WithFileSystem(vfs);
+	}
+	auto commit_ctx_result = commit_builder.Finish();
 	if (!commit_ctx_result.ok()) {
 		throw IOException(commit_ctx_result.status().ToString());
 	}

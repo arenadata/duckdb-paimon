@@ -39,6 +39,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/schema/schema.h"
 
+#include "duckdb_vfs_file_system.hpp"
 #include "paimon_catalog.hpp"
 #include "paimon_insert.hpp"
 #include "paimon_schema_entry.hpp"
@@ -160,7 +161,7 @@ unique_ptr<paimon::Catalog> PaimonCatalog::CreatePaimonCatalog(ClientContext &co
                                                                const unordered_map<string, Value> &input_options) {
 	auto paimon_options = PaimonCatalog::GetPaimonOptions(context, path, input_options);
 
-	auto result = paimon::Catalog::Create(path, paimon_options);
+	auto result = paimon::Catalog::Create(path, paimon_options, DuckDBVfsFileSystem::TryWrap(context, path));
 	if (!result.ok()) {
 		throw IOException(result.status().ToString());
 	}

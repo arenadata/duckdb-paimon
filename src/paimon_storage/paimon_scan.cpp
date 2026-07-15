@@ -35,6 +35,7 @@
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 
+#include "duckdb_vfs_file_system.hpp"
 #include "paimon_catalog.hpp"
 #include "paimon_functions.hpp"
 #include "paimon_type_utils.hpp"
@@ -67,6 +68,10 @@ public:
 	std::optional<idx_t> debug_expected_splits;
 
 	string table_schema_json;
+
+	//! DuckDB VFS adapter for schemes paimon-cpp cannot handle itself
+	//! (hdfs://, s3://, ...); nullptr for local and oss paths.
+	std::shared_ptr<paimon::FileSystem> vfs;
 };
 
 static std::shared_ptr<paimon::Predicate> TryConvertComparison(const BoundComparisonExpression &comp,
@@ -623,6 +628,7 @@ static unique_ptr<FunctionData> PaimonScanBind(ClientContext &context, TableFunc
 		bind_data->debug_expected_splits = NumericCast<idx_t>(expected_value);
 	}
 	bind_data->paimon_options = PaimonCatalog::GetPaimonOptions(context, path.warehouse, scan_options);
+	bind_data->vfs = DuckDBVfsFileSystem::TryWrap(context, path.warehouse);
 	auto paimon_catalog = PaimonCatalog::CreatePaimonCatalog(context, path.warehouse, scan_options);
 
 	auto table_schema_result = paimon_catalog->LoadTableSchema(paimon::Identifier(path.dbname, path.tablename));
@@ -682,6 +688,9 @@ static std::vector<std::shared_ptr<paimon::Split>> CreatePaimonScanSplits(const 
 	scan_context_builder.SetOptions(bind.paimon_options).SetPredicate(bind.predicates);
 	if (!bind.part_filters.empty()) {
 		scan_context_builder.SetPartitionFilter(bind.part_filters);
+	}
+	if (bind.vfs) {
+		scan_context_builder.WithFileSystem(bind.vfs);
 	}
 
 	auto scan_context_result = scan_context_builder.Finish();
@@ -785,12 +794,15 @@ private:
 		}
 
 		paimon::ReadContextBuilder read_context_builder(global_state.path);
-		auto read_context_result = read_context_builder.SetOptions(bind_data.paimon_options)
-		                               .SetTableSchema(bind_data.table_schema_json)
-		                               .SetReadFieldIds(read_column_ids)
-		                               .SetPredicate(global_state.paimon_predicates)
-		                               .EnablePredicateFilter(false)
-		                               .Finish();
+		read_context_builder.SetOptions(bind_data.paimon_options)
+		    .SetTableSchema(bind_data.table_schema_json)
+		    .SetReadFieldIds(read_column_ids)
+		    .SetPredicate(global_state.paimon_predicates)
+		    .EnablePredicateFilter(false);
+		if (bind_data.vfs) {
+			read_context_builder.WithFileSystem(bind_data.vfs);
+		}
+		auto read_context_result = read_context_builder.Finish();
 		if (!read_context_result.ok()) {
 			throw IOException(read_context_result.status().ToString());
 		}
@@ -869,8 +881,11 @@ static vector<PartitionStatistics> PaimonGetPartitionStats(ClientContext &, GetP
 	}
 
 	paimon::ReadContextBuilder read_context_builder(bind.table_data_path);
-	auto read_context_result =
-	    read_context_builder.SetOptions(bind.paimon_options).SetTableSchema(bind.table_schema_json).Finish();
+	read_context_builder.SetOptions(bind.paimon_options).SetTableSchema(bind.table_schema_json);
+	if (bind.vfs) {
+		read_context_builder.WithFileSystem(bind.vfs);
+	}
+	auto read_context_result = read_context_builder.Finish();
 	if (!read_context_result.ok()) {
 		return result;
 	}

@@ -97,6 +97,7 @@ endif()
 set(EXTENSION_SOURCES
   src/paimon_extension.cpp
   src/paimon_functions.cpp
+  src/paimon_storage/duckdb_vfs_file_system.cpp
   src/paimon_storage/paimon_scan.cpp
   src/paimon_storage/paimon_snapshots.cpp
   src/paimon_storage/paimon_catalog.cpp
