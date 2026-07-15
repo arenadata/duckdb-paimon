@@ -269,7 +269,7 @@ private:
 
 } // namespace
 
-DuckDBVfsFileSystem::DuckDBVfsFileSystem(shared_ptr<DatabaseInstance> db_p) : db(std::move(db_p)), opener(*db) {
+DuckDBVfsFileSystem::DuckDBVfsFileSystem(shared_ptr<DatabaseInstance> db_p) : db(std::move(db_p)) {
 }
 
 std::shared_ptr<paimon::FileSystem> DuckDBVfsFileSystem::TryWrap(ClientContext &context, const std::string &path) {
@@ -287,14 +287,14 @@ std::shared_ptr<paimon::FileSystem> DuckDBVfsFileSystem::TryWrap(ClientContext &
 paimon::Result<std::unique_ptr<paimon::InputStream>> DuckDBVfsFileSystem::Open(const std::string &path) const {
 	try {
 		auto &fs = Fs();
-		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ, &opener);
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 		auto length = fs.GetFileSize(*handle);
 		std::unique_ptr<paimon::InputStream> stream =
 		    std::make_unique<DuckDBVfsInputStream>(fs, std::move(handle), path, length);
 		return stream;
 	} catch (std::exception &ex) {
 		try {
-			if (!Fs().FileExists(path, &opener)) {
+			if (!Fs().FileExists(path)) {
 				return paimon::Status::NotExist("File '", path, "' not exists");
 			}
 		} catch (std::exception &) { // fall through to the original error
@@ -307,10 +307,10 @@ paimon::Result<std::unique_ptr<paimon::OutputStream>> DuckDBVfsFileSystem::Creat
                                                                                   bool overwrite) const {
 	try {
 		auto &fs = Fs();
-		if (!overwrite && fs.FileExists(path, &opener)) {
+		if (!overwrite && fs.FileExists(path)) {
 			return paimon::Status::Exist("File '", path, "' already exists");
 		}
-		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW, &opener);
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
 		std::unique_ptr<paimon::OutputStream> stream =
 		    std::make_unique<DuckDBVfsOutputStream>(fs, std::move(handle), path);
 		return stream;
@@ -322,11 +322,11 @@ paimon::Result<std::unique_ptr<paimon::OutputStream>> DuckDBVfsFileSystem::Creat
 paimon::Status DuckDBVfsFileSystem::Mkdirs(const std::string &path) const {
 	try {
 		auto &fs = Fs();
-		if (fs.DirectoryExists(path, &opener)) {
+		if (fs.DirectoryExists(path)) {
 			return paimon::Status::OK();
 		}
 		// hdfs/ofs create parents in one call; object stores treat this as a no-op
-		fs.CreateDirectory(path, &opener);
+		fs.CreateDirectory(path);
 		return paimon::Status::OK();
 	} catch (std::exception &ex) {
 		return IOError("Mkdirs", path, ex);
@@ -336,10 +336,10 @@ paimon::Status DuckDBVfsFileSystem::Mkdirs(const std::string &path) const {
 paimon::Status DuckDBVfsFileSystem::Rename(const std::string &src, const std::string &dst) const {
 	try {
 		auto &fs = Fs();
-		if (!fs.FileExists(src, &opener) && !fs.DirectoryExists(src, &opener)) {
+		if (!fs.FileExists(src) && !fs.DirectoryExists(src)) {
 			return paimon::Status::NotExist("rename '", src, "' to '", dst, "' failed: src not exist");
 		}
-		fs.MoveFile(src, dst, &opener);
+		fs.MoveFile(src, dst);
 		return paimon::Status::OK();
 	} catch (std::exception &ex) {
 		return IOError("Rename", src, ex);
@@ -349,20 +349,20 @@ paimon::Status DuckDBVfsFileSystem::Rename(const std::string &src, const std::st
 paimon::Status DuckDBVfsFileSystem::Delete(const std::string &path, bool recursive) const {
 	try {
 		auto &fs = Fs();
-		if (fs.DirectoryExists(path, &opener)) {
+		if (fs.DirectoryExists(path)) {
 			if (!recursive) {
 				bool empty = true;
 				fs.ListFiles(
-				    path, [&](const string &, bool) { empty = false; }, &opener);
+				    path, [&](const string &, bool) { empty = false; });
 				if (!empty) {
 					return paimon::Status::IOError("cannot delete '", path, "', directory is not empty");
 				}
 			}
-			fs.RemoveDirectory(path, &opener);
+			fs.RemoveDirectory(path);
 			return paimon::Status::OK();
 		}
-		if (fs.FileExists(path, &opener)) {
-			fs.RemoveFile(path, &opener);
+		if (fs.FileExists(path)) {
+			fs.RemoveFile(path);
 			return paimon::Status::OK();
 		}
 		return paimon::Status::NotExist("Path '", path, "' not exists");
@@ -373,7 +373,7 @@ paimon::Status DuckDBVfsFileSystem::Delete(const std::string &path, bool recursi
 
 paimon::Result<std::unique_ptr<paimon::FileStatus>> DuckDBVfsFileSystem::StatFile(const std::string &path) const {
 	auto &fs = Fs();
-	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ, &opener);
+	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	auto len = fs.GetFileSize(*handle);
 	int64_t mtime_ms = 0;
 	try {
@@ -388,10 +388,10 @@ paimon::Result<std::unique_ptr<paimon::FileStatus>> DuckDBVfsFileSystem::StatFil
 paimon::Result<std::unique_ptr<paimon::FileStatus>> DuckDBVfsFileSystem::GetFileStatus(const std::string &path) const {
 	try {
 		auto &fs = Fs();
-		if (fs.FileExists(path, &opener)) {
+		if (fs.FileExists(path)) {
 			return StatFile(path);
 		}
-		if (fs.DirectoryExists(path, &opener)) {
+		if (fs.DirectoryExists(path)) {
 			std::unique_ptr<paimon::FileStatus> status = std::make_unique<DuckDBVfsFileStatus>(path, 0, true, 0);
 			return status;
 		}
@@ -405,18 +405,15 @@ paimon::Status DuckDBVfsFileSystem::ListDir(
     const std::string &directory, std::vector<std::unique_ptr<paimon::BasicFileStatus>> *file_status_list) const {
 	try {
 		auto &fs = Fs();
-		if (!fs.DirectoryExists(directory, &opener)) {
-			if (fs.FileExists(directory, &opener)) {
+		if (!fs.DirectoryExists(directory)) {
+			if (fs.FileExists(directory)) {
 				return paimon::Status::IOError("path '", directory, "' already exists and is not a directory");
 			}
 			return paimon::Status::OK();
 		}
-		fs.ListFiles(
-		    directory,
-		    [&](const string &name, bool is_dir) {
-			    file_status_list->push_back(std::make_unique<DuckDBVfsBasicFileStatus>(JoinPath(directory, name), is_dir));
-		    },
-		    &opener);
+		fs.ListFiles(directory, [&](const string &name, bool is_dir) {
+			file_status_list->push_back(std::make_unique<DuckDBVfsBasicFileStatus>(JoinPath(directory, name), is_dir));
+		});
 		return paimon::Status::OK();
 	} catch (std::exception &ex) {
 		return IOError("ListDir", directory, ex);
@@ -427,8 +424,8 @@ paimon::Status DuckDBVfsFileSystem::ListFileStatus(
     const std::string &path, std::vector<std::unique_ptr<paimon::FileStatus>> *file_status_list) const {
 	try {
 		auto &fs = Fs();
-		if (!fs.DirectoryExists(path, &opener)) {
-			if (!fs.FileExists(path, &opener)) {
+		if (!fs.DirectoryExists(path)) {
+			if (!fs.FileExists(path)) {
 				return paimon::Status::OK();
 			}
 			auto status = StatFile(path);
@@ -442,7 +439,7 @@ paimon::Status DuckDBVfsFileSystem::ListFileStatus(
 		// support return size/mtime inline, saving a per-file stat round trip.
 		std::vector<OpenFileInfo> entries;
 		fs.ListFiles(
-		    path, [&](OpenFileInfo &info) { entries.push_back(info); }, &opener);
+		    path, [&](OpenFileInfo &info) { entries.push_back(info); });
 		for (auto &entry : entries) {
 			auto full_path = JoinPath(path, entry.path);
 			bool is_dir = false;
@@ -489,7 +486,7 @@ paimon::Status DuckDBVfsFileSystem::ListFileStatus(
 paimon::Result<bool> DuckDBVfsFileSystem::Exists(const std::string &path) const {
 	try {
 		auto &fs = Fs();
-		return fs.FileExists(path, &opener) || fs.DirectoryExists(path, &opener);
+		return fs.FileExists(path) || fs.DirectoryExists(path);
 	} catch (std::exception &ex) {
 		return IOError("Exists", path, ex);
 	}

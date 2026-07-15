@@ -24,7 +24,6 @@
 
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/main/database_file_opener.hpp"
 
 #include "paimon/fs/file_system.h"
 
@@ -63,6 +62,8 @@ public:
 	paimon::Result<bool> Exists(const std::string &path) const override;
 
 private:
+	//! The database-level OpenerFileSystem: it injects a database-scoped opener
+	//! (settings/secrets) into every call itself, so no opener is passed here.
 	duckdb::FileSystem &Fs() const {
 		return db->GetFileSystem();
 	}
@@ -70,9 +71,6 @@ private:
 	paimon::Result<std::unique_ptr<paimon::FileStatus>> StatFile(const std::string &path) const;
 
 	shared_ptr<DatabaseInstance> db;
-	//! Database-scoped opener: resolves settings and secrets without a live
-	//! client context, which paimon-cpp calls cannot provide.
-	mutable DatabaseFileOpener opener;
 };
 
 } // namespace duckdb
