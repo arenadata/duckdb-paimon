@@ -293,8 +293,7 @@ paimon::Result<std::unique_ptr<paimon::InputStream>> DuckDBVfsFileSystem::Open(c
 	try {
 		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 		auto length = NumericCast<int64_t>(handle->GetFileSize());
-		std::unique_ptr<paimon::InputStream> stream =
-		    make_uniq<DuckDBVfsInputStream>(std::move(handle), path, length);
+		std::unique_ptr<paimon::InputStream> stream = make_uniq<DuckDBVfsInputStream>(std::move(handle), path, length);
 		return stream;
 	} catch (std::exception &ex) {
 		try {
@@ -432,8 +431,9 @@ paimon::Result<std::unique_ptr<paimon::FileStatus>> DuckDBVfsFileSystem::GetFile
 	return status.status(); // NotExist or the original stat error
 }
 
-paimon::Status DuckDBVfsFileSystem::ListDir(
-    const std::string &directory, std::vector<std::unique_ptr<paimon::BasicFileStatus>> *file_status_list) const {
+paimon::Status
+DuckDBVfsFileSystem::ListDir(const std::string &directory,
+                             std::vector<std::unique_ptr<paimon::BasicFileStatus>> *file_status_list) const {
 	shared_ptr<ClientContext> ctx;
 	auto &fs = Fs(ctx);
 	// List first; classify the failure only on the rare miss (missing dir lists
@@ -460,8 +460,9 @@ paimon::Status DuckDBVfsFileSystem::ListDir(
 	return paimon::Status::IOError("ListDir '", directory, "' failed via DuckDB file system: ", list_error);
 }
 
-paimon::Status DuckDBVfsFileSystem::ListFileStatus(
-    const std::string &path, std::vector<std::unique_ptr<paimon::FileStatus>> *file_status_list) const {
+paimon::Status
+DuckDBVfsFileSystem::ListFileStatus(const std::string &path,
+                                    std::vector<std::unique_ptr<paimon::FileStatus>> *file_status_list) const {
 	shared_ptr<ClientContext> ctx;
 	auto &fs = Fs(ctx);
 	// The OpenFileInfo listing lets file systems with extended listing support

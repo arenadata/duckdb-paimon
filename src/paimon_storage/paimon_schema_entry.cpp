@@ -85,6 +85,38 @@ optional_ptr<CatalogEntry> PaimonSchemaEntry::CreateFunction(CatalogTransaction,
 	throw NotImplementedException("CreateFunction not supported yet");
 }
 
+vector<string> ExtractPaimonPrimaryKeys(BoundCreateTableInfo &info, const vector<string> &col_names) {
+	vector<string> primary_keys;
+	for (auto &constraint : info.Base().constraints) {
+		if (constraint->type != ConstraintType::UNIQUE) {
+			continue;
+		}
+		auto &unique = constraint->Cast<UniqueConstraint>();
+		if (!unique.IsPrimaryKey()) {
+			continue;
+		}
+		if (unique.HasIndex()) {
+			primary_keys.push_back(col_names[unique.GetIndex().index]);
+		} else {
+			for (auto &col_name : unique.GetColumnNames()) {
+				primary_keys.push_back(col_name);
+			}
+		}
+	}
+	return primary_keys;
+}
+
+vector<string> ExtractPaimonPartitionKeys(BoundCreateTableInfo &info) {
+	vector<string> partition_keys;
+	for (auto &pk_expr : info.Base().partition_keys) {
+		if (pk_expr->GetExpressionType() != ExpressionType::COLUMN_REF) {
+			throw InvalidInputException("Paimon partition key must be a column reference");
+		}
+		partition_keys.push_back(pk_expr->Cast<ColumnRefExpression>().GetColumnName());
+	}
+	return partition_keys;
+}
+
 optional_ptr<CatalogEntry> PaimonSchemaEntry::CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) {
 	auto &base = info.Base();
 	if (base.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
@@ -110,33 +142,8 @@ optional_ptr<CatalogEntry> PaimonSchemaEntry::CreateTable(CatalogTransaction tra
 		}
 	} arrow_guard {arrow_schema};
 
-	vector<string> primary_keys;
-	for (auto &constraint : base.constraints) {
-		if (constraint->type != ConstraintType::UNIQUE) {
-			continue;
-		}
-		auto &unique = constraint->Cast<UniqueConstraint>();
-		if (!unique.IsPrimaryKey()) {
-			continue;
-		}
-		if (unique.HasIndex()) {
-			auto col_idx = unique.GetIndex();
-			primary_keys.push_back(col_names[col_idx.index]);
-		} else {
-			for (auto &col_name : unique.GetColumnNames()) {
-				primary_keys.push_back(col_name);
-			}
-		}
-	}
-
-	vector<string> partition_keys;
-	for (auto &pk_expr : base.partition_keys) {
-		if (pk_expr->GetExpressionType() == ExpressionType::COLUMN_REF) {
-			partition_keys.push_back(pk_expr->Cast<ColumnRefExpression>().GetColumnName());
-		} else {
-			throw InvalidInputException("Paimon partition key must be a column reference");
-		}
-	}
+	auto primary_keys = ExtractPaimonPrimaryKeys(info, col_names);
+	auto partition_keys = ExtractPaimonPartitionKeys(info);
 
 	std::map<string, string> paimon_options;
 	for (auto &opt : base.options) {

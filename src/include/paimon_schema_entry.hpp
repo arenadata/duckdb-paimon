@@ -25,10 +25,16 @@
 #pragma once
 
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 
 #include "paimon_table_set.hpp"
 
 namespace duckdb {
+
+//! PRIMARY KEY column names from the bound constraints of a CREATE TABLE.
+vector<string> ExtractPaimonPrimaryKeys(BoundCreateTableInfo &info, const vector<string> &col_names);
+//! PARTITIONED BY column names; every key must be a plain column reference.
+vector<string> ExtractPaimonPartitionKeys(BoundCreateTableInfo &info);
 
 class PaimonSchemaEntry : public SchemaCatalogEntry {
 public:
