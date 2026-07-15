@@ -160,12 +160,16 @@ map<string, string> PaimonCatalog::GetPaimonOptions(ClientContext &context, cons
 unique_ptr<paimon::Catalog> PaimonCatalog::CreatePaimonCatalog(ClientContext &context, const string &path,
                                                                const unordered_map<string, Value> &input_options) {
 	auto paimon_options = PaimonCatalog::GetPaimonOptions(context, path, input_options);
+	return CreatePaimonCatalog(path, paimon_options, DuckDBVfsFileSystem::TryWrap(context, path));
+}
 
-	auto result = paimon::Catalog::Create(path, paimon_options, DuckDBVfsFileSystem::TryWrap(context, path));
+unique_ptr<paimon::Catalog> PaimonCatalog::CreatePaimonCatalog(const string &path,
+                                                               const map<string, string> &paimon_options,
+                                                               std::shared_ptr<paimon::FileSystem> file_system) {
+	auto result = paimon::Catalog::Create(path, paimon_options, std::move(file_system));
 	if (!result.ok()) {
 		throw IOException(result.status().ToString());
 	}
-
 	return unique_ptr<paimon::Catalog>(std::move(result).value().release());
 }
 
@@ -239,16 +243,24 @@ PhysicalOperator &PaimonCatalog::PlanCreateTableAs(ClientContext &context, Physi
 	auto table_path = path + "/" + base.schema + paimon::Catalog::DB_SUFFIX + "/" + base.table;
 	auto paimon_options = GetPaimonOptions(context, path, attached_options);
 
-	vector<string> part_keys;
+	// CTAS chunk order is the declaration order, so partition indices come from it.
+	PaimonPartitionInfo partition_info;
+	auto col_names = base.columns.GetColumnNames();
 	for (auto &part_expr : base.partition_keys) {
 		if (part_expr->GetExpressionType() != ExpressionType::COLUMN_REF) {
 			throw InvalidInputException("Paimon partition key must be a column reference");
 		}
-		part_keys.push_back(part_expr->Cast<ColumnRefExpression>().GetColumnName());
+		auto &part_name = part_expr->Cast<ColumnRefExpression>().GetColumnName();
+		auto it = std::find(col_names.begin(), col_names.end(), part_name);
+		if (it == col_names.end()) {
+			throw InvalidInputException("Paimon partition key \"%s\" is not a column of the table", part_name);
+		}
+		partition_info.part_key_names.push_back(part_name);
+		partition_info.part_col_idxs.push_back(NumericCast<idx_t>(std::distance(col_names.begin(), it)));
 	}
 
 	auto &insert = planner.Make<PhysicalPaimonInsert>(op, op.schema, std::move(op.info), std::move(table_path),
-	                                                  std::move(paimon_options), std::move(part_keys), 0U);
+	                                                  std::move(paimon_options), std::move(partition_info), 0U);
 	insert.children.push_back(plan);
 	return insert;
 }
@@ -263,23 +275,18 @@ PhysicalOperator &PaimonCatalog::PlanInsert(ClientContext &context, PhysicalPlan
 	auto table_path = path + "/" + table.schema.name + paimon::Catalog::DB_SUFFIX + "/" + table.name;
 	auto paimon_options = GetPaimonOptions(context, path, attached_options);
 
-	vector<string> part_keys;
 	auto schema_result = paimon_catalog->LoadTableSchema(paimon::Identifier(table.schema.name, table.name));
 	if (!schema_result.ok()) {
 		throw IOException(schema_result.status().ToString());
 	}
-	auto data_schema = std::dynamic_pointer_cast<paimon::DataSchema>(schema_result.value());
-	if (data_schema) {
-		auto &schema_part_keys = data_schema->PartitionKeys();
-		part_keys.assign(schema_part_keys.begin(), schema_part_keys.end());
-	}
+	auto partition_info = PhysicalPaimonInsert::ResolvePartitionInfo(schema_result.value());
 
 	if (plan && !op.column_index_map.empty()) {
 		plan = planner.ResolveDefaultsProjection(op, *plan);
 	}
 
 	auto &insert = planner.Make<PhysicalPaimonInsert>(op, table.schema, nullptr, std::move(table_path),
-	                                                  std::move(paimon_options), std::move(part_keys), 0U);
+	                                                  std::move(paimon_options), std::move(partition_info), 0U);
 	if (plan) {
 		insert.children.push_back(*plan);
 	}

@@ -629,7 +629,7 @@ static unique_ptr<FunctionData> PaimonScanBind(ClientContext &context, TableFunc
 	}
 	bind_data->paimon_options = PaimonCatalog::GetPaimonOptions(context, path.warehouse, scan_options);
 	bind_data->vfs = DuckDBVfsFileSystem::TryWrap(context, path.warehouse);
-	auto paimon_catalog = PaimonCatalog::CreatePaimonCatalog(context, path.warehouse, scan_options);
+	auto paimon_catalog = PaimonCatalog::CreatePaimonCatalog(path.warehouse, bind_data->paimon_options, bind_data->vfs);
 
 	auto table_schema_result = paimon_catalog->LoadTableSchema(paimon::Identifier(path.dbname, path.tablename));
 	if (!table_schema_result.ok()) {

@@ -42,13 +42,15 @@ set(PAIMON_CPP_PATCHES
   ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-disable-re2-tests.patch
   ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-ofs-not-object-store.patch)
 
-# Build patch command: apply each patch idempotently
-set(PAIMON_CPP_PATCH_SCRIPT "")
+# Build patch command: apply each patch idempotently. Subshell parens keep the
+# || within each step (and need no ';', which CMake would split as a list):
+# without grouping a failed apply is short-circuited into the NEXT step's apply
+# branch and the command exits 0 on an unpatched tree.
+set(PAIMON_CPP_PATCH_SCRIPT "true")
 foreach(patch IN LISTS PAIMON_CPP_PATCHES)
   string(APPEND PAIMON_CPP_PATCH_SCRIPT
-    "git -C ${PAIMON_CPP_SOURCE_DIR} apply --reverse --check ${patch} 2>/dev/null || git -C ${PAIMON_CPP_SOURCE_DIR} apply ${patch} && ")
+    " && (git -C ${PAIMON_CPP_SOURCE_DIR} apply --reverse --check ${patch} 2>/dev/null || git -C ${PAIMON_CPP_SOURCE_DIR} apply ${patch})")
 endforeach()
-string(APPEND PAIMON_CPP_PATCH_SCRIPT "true")
 
 ExternalProject_Add(paimon_cpp_ep
   SOURCE_DIR ${PAIMON_CPP_SOURCE_DIR}

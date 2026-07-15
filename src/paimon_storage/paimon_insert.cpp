@@ -48,11 +48,38 @@ namespace duckdb {
 
 PhysicalPaimonInsert::PhysicalPaimonInsert(PhysicalPlan &physical_plan, LogicalOperator &op, SchemaCatalogEntry &schema,
                                            unique_ptr<BoundCreateTableInfo> info, string table_path,
-                                           map<string, string> paimon_options, vector<string> part_keys,
+                                           map<string, string> paimon_options, PaimonPartitionInfo partition_info,
                                            idx_t estimated_cardinality)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, {LogicalType::BIGINT}, estimated_cardinality),
       schema(&schema), info(std::move(info)), table_path(std::move(table_path)),
-      paimon_options(std::move(paimon_options)), part_keys(std::move(part_keys)) {
+      paimon_options(std::move(paimon_options)), partition_info(std::move(partition_info)) {
+}
+
+PaimonPartitionInfo PhysicalPaimonInsert::ResolvePartitionInfo(const std::shared_ptr<paimon::Schema> &table_schema) {
+	PaimonPartitionInfo result;
+	auto data_schema = std::dynamic_pointer_cast<paimon::DataSchema>(table_schema);
+	if (!data_schema) {
+		throw IOException("Failed to resolve Paimon data schema for insert");
+	}
+	auto &part_keys = data_schema->PartitionKeys();
+	if (part_keys.empty()) {
+		return result;
+	}
+	auto field_names = table_schema->FieldNames();
+	for (auto &part_key : part_keys) {
+		auto it = std::find(field_names.begin(), field_names.end(), part_key);
+		if (it == field_names.end()) {
+			throw IOException("Partition key \"%s\" not found in Paimon table schema", part_key);
+		}
+		result.part_key_names.push_back(part_key);
+		result.part_col_idxs.push_back(NumericCast<idx_t>(std::distance(field_names.begin(), it)));
+	}
+	auto &table_options = data_schema->Options();
+	auto default_name = table_options.find(paimon::Options::PARTITION_DEFAULT_NAME);
+	if (default_name != table_options.end()) {
+		result.null_part_name = default_name->second;
+	}
+	return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,22 +107,6 @@ struct PaimonInsertLocalState : public LocalSinkState {
 // Sink interface
 // ---------------------------------------------------------------------------
 
-//! table_path layout is <warehouse>/<db><DB_SUFFIX>/<table>
-static void SplitDataTablePath(const string &table_path, string &warehouse, string &db_name, string &table_name) {
-	auto table_slash = table_path.find_last_of('/');
-	auto db_start = table_slash == string::npos ? string::npos : table_path.find_last_of('/', table_slash - 1);
-	if (db_start == string::npos) {
-		throw IOException("Invalid Paimon table path: " + table_path);
-	}
-	table_name = table_path.substr(table_slash + 1);
-	db_name = table_path.substr(db_start + 1, table_slash - db_start - 1);
-	const string db_suffix(paimon::Catalog::DB_SUFFIX);
-	if (db_name.size() > db_suffix.size() && StringUtil::EndsWith(db_name, db_suffix)) {
-		db_name = db_name.substr(0, db_name.size() - db_suffix.size());
-	}
-	warehouse = table_path.substr(0, db_start);
-}
-
 unique_ptr<GlobalSinkState> PhysicalPaimonInsert::GetGlobalSinkState(ClientContext &context) const {
 	auto state = make_uniq<PaimonInsertGlobalState>();
 
@@ -105,51 +116,10 @@ unique_ptr<GlobalSinkState> PhysicalPaimonInsert::GetGlobalSinkState(ClientConte
 		paimon_schema.CreateTable(txn, *info);
 	}
 
-	if (!part_keys.empty()) {
-		// Resolve the table schema straight from the warehouse instead of
-		// casting to PaimonCatalog: the operator must stay plannable from
-		// foreign catalogs (e.g. a Hive Metastore catalog inserting into a
-		// Paimon table).
-		string warehouse, db_name, table_name;
-		SplitDataTablePath(table_path, warehouse, db_name, table_name);
-		if (info) {
-			db_name = info->Base().schema;
-			table_name = info->Base().table;
-		}
-
-		auto catalog_result =
-		    paimon::Catalog::Create(warehouse, paimon_options, DuckDBVfsFileSystem::TryWrap(context, warehouse));
-		if (!catalog_result.ok()) {
-			throw IOException(catalog_result.status().ToString());
-		}
-		auto catalog = std::move(catalog_result).value();
-
-		auto schema_result = catalog->LoadTableSchema(paimon::Identifier(db_name, table_name));
-		if (!schema_result.ok()) {
-			throw IOException(schema_result.status().ToString());
-		}
-
-		auto table_schema = schema_result.value();
-		auto data_schema = std::dynamic_pointer_cast<paimon::DataSchema>(table_schema);
-		if (!data_schema) {
-			throw IOException("Failed to resolve Paimon data schema for partitioned insert");
-		}
-
-		auto &table_options = data_schema->Options();
-		auto default_name = table_options.find(paimon::Options::PARTITION_DEFAULT_NAME);
-		if (default_name != table_options.end()) {
-			state->null_part_name = default_name->second;
-		}
-
-		auto field_names = table_schema->FieldNames();
-		state->part_key_names = part_keys;
-		for (auto &part_key : part_keys) {
-			auto it = std::find(field_names.begin(), field_names.end(), part_key);
-			if (it == field_names.end()) {
-				throw IOException("Partition key \"%s\" not found in Paimon table schema", part_key);
-			}
-			state->part_col_idxs.push_back(std::distance(field_names.begin(), it));
-		}
+	state->part_key_names = partition_info.part_key_names;
+	state->part_col_idxs = partition_info.part_col_idxs;
+	if (!partition_info.null_part_name.empty()) {
+		state->null_part_name = partition_info.null_part_name;
 	}
 
 	return std::move(state);

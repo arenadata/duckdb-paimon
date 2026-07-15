@@ -50,6 +50,10 @@ public:
 	                                            const unordered_map<string, Value> &input_options);
 	static unique_ptr<paimon::Catalog> CreatePaimonCatalog(ClientContext &context, const string &path,
 	                                                       const unordered_map<string, Value> &input_options);
+	//! For callers that already resolved the options and the VFS adapter.
+	static unique_ptr<paimon::Catalog> CreatePaimonCatalog(const string &path,
+	                                                       const map<string, string> &paimon_options,
+	                                                       std::shared_ptr<paimon::FileSystem> file_system);
 
 	// catalog APIs
 	void Initialize(bool load_builtin) override;

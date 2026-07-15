@@ -36,6 +36,9 @@ PaimonTablePath PaimonTablePath::Parse(const vector<Value> &inputs) {
 	}
 
 	if (inputs.size() > 1) {
+		if (inputs.size() != 3) {
+			throw InvalidInputException("expected either a single table path or (warehouse, database, table)");
+		}
 		result.warehouse = inputs[0].ToString();
 		result.dbname = inputs[1].ToString();
 		result.tablename = inputs[2].ToString();

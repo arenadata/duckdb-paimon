@@ -28,11 +28,26 @@
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 
 #include <map>
+#include <memory>
 #include <string>
+
+namespace paimon {
+class Schema;
+} // namespace paimon
 
 namespace duckdb {
 
 class SchemaCatalogEntry;
+
+//! Partition write info, resolved at plan time so the sink needs no catalog access.
+struct PaimonPartitionInfo {
+	//! Partition key names, in Paimon schema order.
+	vector<string> part_key_names;
+	//! Chunk column index of each partition key (chunk order == Paimon field order).
+	vector<idx_t> part_col_idxs;
+	//! Directory name for NULL partition values; empty keeps the Paimon default.
+	string null_part_name;
+};
 
 class PhysicalPaimonInsert : public PhysicalOperator {
 public:
@@ -40,13 +55,16 @@ public:
 
 	PhysicalPaimonInsert(PhysicalPlan &physical_plan, LogicalOperator &op, SchemaCatalogEntry &schema,
 	                     unique_ptr<BoundCreateTableInfo> info, string table_path, map<string, string> paimon_options,
-	                     vector<string> part_keys, idx_t estimated_cardinality);
+	                     PaimonPartitionInfo partition_info, idx_t estimated_cardinality);
+
+	//! Resolve partition write info from a loaded Paimon table schema.
+	static PaimonPartitionInfo ResolvePartitionInfo(const std::shared_ptr<paimon::Schema> &table_schema);
 
 	SchemaCatalogEntry *schema;
 	unique_ptr<BoundCreateTableInfo> info;
 	string table_path;
 	map<string, string> paimon_options;
-	vector<string> part_keys;
+	PaimonPartitionInfo partition_info;
 
 public:
 	bool IsSink() const override {
