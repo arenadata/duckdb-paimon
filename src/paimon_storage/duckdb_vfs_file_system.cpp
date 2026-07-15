@@ -90,8 +90,8 @@ private:
 
 class DuckDBVfsInputStream : public paimon::InputStream {
 public:
-	DuckDBVfsInputStream(FileSystem &fs, unique_ptr<FileHandle> handle, std::string path, int64_t length)
-	    : fs(fs), handle(std::move(handle)), path(std::move(path)), length(length) {
+	DuckDBVfsInputStream(unique_ptr<FileHandle> handle, std::string path, int64_t length)
+	    : handle(std::move(handle)), path(std::move(path)), length(length) {
 	}
 
 	paimon::Status Close() override {
@@ -117,7 +117,7 @@ public:
 				pos = offset;
 				break;
 			case paimon::FS_SEEK_CUR:
-				pos = NumericCast<int64_t>(fs.SeekPosition(*handle)) + offset;
+				pos = NumericCast<int64_t>(handle->SeekPosition()) + offset;
 				break;
 			case paimon::FS_SEEK_END:
 			default:
@@ -127,7 +127,7 @@ public:
 			if (pos < 0) {
 				return paimon::Status::Invalid("seek to negative position ", pos, " in '", path, "'");
 			}
-			fs.Seek(*handle, NumericCast<idx_t>(pos));
+			handle->Seek(NumericCast<idx_t>(pos));
 			return paimon::Status::OK();
 		} catch (std::exception &ex) {
 			return IOError("Seek", path, ex);
@@ -137,7 +137,7 @@ public:
 	paimon::Result<int64_t> GetPos() const override {
 		std::lock_guard<std::mutex> guard(lock);
 		try {
-			return NumericCast<int64_t>(fs.SeekPosition(*handle));
+			return NumericCast<int64_t>(handle->SeekPosition());
 		} catch (std::exception &ex) {
 			return IOError("GetPos", path, ex);
 		}
@@ -146,7 +146,7 @@ public:
 	paimon::Result<int64_t> Read(char *buffer, int64_t size) override {
 		std::lock_guard<std::mutex> guard(lock);
 		try {
-			return fs.Read(*handle, buffer, size);
+			return handle->Read(buffer, NumericCast<idx_t>(size));
 		} catch (std::exception &ex) {
 			return IOError("Read", path, ex);
 		}
@@ -176,8 +176,8 @@ public:
 	}
 
 private:
-	//! pread contract: reads at offset without changing the stream position.
-	//! DuckDB's positional Read moves the file pointer, so save and restore it.
+	//! pread contract: FileHandle's positional Read reads exactly n bytes and
+	//! leaves the file offset untouched.
 	paimon::Result<int64_t> PositionalRead(char *buffer, int64_t size, int64_t offset) {
 		if (offset < 0 || size < 0) {
 			return paimon::Status::Invalid("negative read offset/size for '", path, "'");
@@ -187,16 +187,13 @@ private:
 			return int64_t(0);
 		}
 		try {
-			auto saved = fs.SeekPosition(*handle);
-			fs.Read(*handle, buffer, n, NumericCast<idx_t>(offset));
-			fs.Seek(*handle, saved);
+			handle->Read(buffer, NumericCast<idx_t>(n), NumericCast<idx_t>(offset));
 			return n;
 		} catch (std::exception &ex) {
 			return IOError("Read", path, ex);
 		}
 	}
 
-	FileSystem &fs;
 	unique_ptr<FileHandle> handle;
 	std::string path;
 	int64_t length;
@@ -206,8 +203,8 @@ private:
 
 class DuckDBVfsOutputStream : public paimon::OutputStream {
 public:
-	DuckDBVfsOutputStream(FileSystem &fs, unique_ptr<FileHandle> handle, std::string path)
-	    : fs(fs), handle(std::move(handle)), path(std::move(path)) {
+	DuckDBVfsOutputStream(unique_ptr<FileHandle> handle, std::string path)
+	    : handle(std::move(handle)), path(std::move(path)) {
 	}
 
 	paimon::Status Close() override {
@@ -227,7 +224,7 @@ public:
 		try {
 			int64_t total = 0;
 			while (total < size) {
-				auto n = fs.Write(*handle, const_cast<char *>(buffer) + total, size - total);
+				auto n = handle->Write(const_cast<char *>(buffer) + total, NumericCast<idx_t>(size - total));
 				if (n <= 0) {
 					return paimon::Status::IOError("short write to '", path, "' via DuckDB file system");
 				}
@@ -242,7 +239,7 @@ public:
 
 	paimon::Status Flush() override {
 		try {
-			fs.FileSync(*handle);
+			handle->Sync();
 			return paimon::Status::OK();
 		} catch (NotImplementedException &) {
 			// Object stores buffer internally and flush on close.
@@ -261,7 +258,6 @@ public:
 	}
 
 private:
-	FileSystem &fs;
 	unique_ptr<FileHandle> handle;
 	std::string path;
 	int64_t pos = 0;
@@ -286,11 +282,10 @@ std::shared_ptr<paimon::FileSystem> DuckDBVfsFileSystem::TryWrap(ClientContext &
 
 paimon::Result<std::unique_ptr<paimon::InputStream>> DuckDBVfsFileSystem::Open(const std::string &path) const {
 	try {
-		auto &fs = Fs();
-		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-		auto length = fs.GetFileSize(*handle);
+		auto handle = Fs().OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		auto length = NumericCast<int64_t>(handle->GetFileSize());
 		std::unique_ptr<paimon::InputStream> stream =
-		    std::make_unique<DuckDBVfsInputStream>(fs, std::move(handle), path, length);
+		    std::make_unique<DuckDBVfsInputStream>(std::move(handle), path, length);
 		return stream;
 	} catch (std::exception &ex) {
 		try {
@@ -312,7 +307,7 @@ paimon::Result<std::unique_ptr<paimon::OutputStream>> DuckDBVfsFileSystem::Creat
 		}
 		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
 		std::unique_ptr<paimon::OutputStream> stream =
-		    std::make_unique<DuckDBVfsOutputStream>(fs, std::move(handle), path);
+		    std::make_unique<DuckDBVfsOutputStream>(std::move(handle), path);
 		return stream;
 	} catch (std::exception &ex) {
 		return IOError("Create", path, ex);
@@ -372,13 +367,14 @@ paimon::Status DuckDBVfsFileSystem::Delete(const std::string &path, bool recursi
 }
 
 paimon::Result<std::unique_ptr<paimon::FileStatus>> DuckDBVfsFileSystem::StatFile(const std::string &path) const {
-	auto &fs = Fs();
-	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-	auto len = fs.GetFileSize(*handle);
+	auto handle = Fs().OpenFile(path, FileFlags::FILE_FLAGS_READ);
+	auto len = NumericCast<int64_t>(handle->GetFileSize());
 	int64_t mtime_ms = 0;
 	try {
-		mtime_ms = Timestamp::GetEpochMs(fs.GetLastModifiedTime(*handle));
-	} catch (std::exception &) { // not all file systems track mtime
+		// Through the handle's own file system: the virtual file system does not
+		// route handle-based calls.
+		mtime_ms = Timestamp::GetEpochMs(handle->file_system.GetLastModifiedTime(*handle));
+	} catch (std::exception &) { // not every file system tracks mtime
 	}
 	handle->Close();
 	std::unique_ptr<paimon::FileStatus> status = std::make_unique<DuckDBVfsFileStatus>(path, len, false, mtime_ms);
