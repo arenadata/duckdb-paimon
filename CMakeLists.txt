@@ -39,7 +39,8 @@ set(PAIMON_CPP_PATCHES
   ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-install-arrow-headers.patch
   ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-macos-ndebug-for-checked-cast.patch
   ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-disable-global-constructors-warning.patch
-  ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-disable-re2-tests.patch)
+  ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-disable-re2-tests.patch
+  ${CMAKE_CURRENT_SOURCE_DIR}/patches/paimon-cpp-ofs-not-object-store.patch)
 
 # Build patch command: apply each patch idempotently
 set(PAIMON_CPP_PATCH_SCRIPT "")

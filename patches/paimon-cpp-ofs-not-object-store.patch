@@ -1,0 +1,13 @@
+diff --git a/src/paimon/common/fs/file_system.cpp b/src/paimon/common/fs/file_system.cpp
+index 514c58e..f8f385a 100644
+--- a/src/paimon/common/fs/file_system.cpp
++++ b/src/paimon/common/fs/file_system.cpp
+@@ -30,7 +30,7 @@ namespace paimon {
+ FileSystem::~FileSystem() = default;
+ 
+ Result<bool> FileSystem::IsObjectStore(const std::string& path_str) {
+-    static const std::set<std::string> non_object_store_schemes{"", "file", "hdfs", "dfs"};
++    static const std::set<std::string> non_object_store_schemes{"", "file", "hdfs", "dfs", "ofs", "o3fs"};
+     PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(path_str));
+     auto path_scheme = StringUtils::ToLowerCase(path.scheme);
+     if (non_object_store_schemes.count(path_scheme)) {
